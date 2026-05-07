@@ -4,13 +4,16 @@ import sys
 
 class HeatTransfer:
     def __init__(self):
-        self.mass_matrix = None
+        self.mass_matrix = None # initialized in import geometry
+        self.stiffness_matrix = None # initialized in import geometry
+        self.boundary_array = None
         self.tet_volumes = None
         self.tet_nodes_dict= {}
         #self.tet_tags = None
         self.num_nodes = 0
         self.num_tets = 0
         self.material_properties = {}
+        self.boundary_conditions = {}
         self.volume_dict = {}
         self.surface_dict = {}
         self.tet_gradients={} # stores tet tag and associated gradients
@@ -33,16 +36,20 @@ class HeatTransfer:
 
         self.material_properties["steel"] = [7850, 510, 20]  # rho, Cp, conductivity SI units
         self.material_properties["copper"] = [8960, 376, 400]
-
+    def import_boundary_conditions(self):
+        # add function to read values in from file
+        self.boundary_conditions["temperature"] = ["Temperature",500] # deg K
+        self.boundary_conditions["cold"] = ["Temperature",300] # deg K
     def import_geometry(self):
 
         tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4)  # gets tets and node tags
         # print("tet tags")
         # print(element_tags)
         face_nodes = gmsh.model.mesh.getElementFaceNodes(4, 3)
-        gmsh.model.mesh.createEdges()
+        #gmsh.model.mesh.createEdges()
         gmsh.model.mesh.createFaces()
         face_tags, face_orientations = gmsh.model.mesh.getFaces(3, face_nodes)
+        print("Face Tags",face_tags)
         node_tags, node_coords, node_params = gmsh.model.mesh.getNodes()
         num_pts = node_tags.size
         # print("Node Tags")
@@ -59,6 +66,8 @@ class HeatTransfer:
         self.num_nodes = num_pts
         self.num_tets = num_tets
         self.mass_matrix = np.zeros((self.num_nodes,self.num_nodes))
+        self.stiffness_matrix = np.zeros((self.num_nodes, self.num_nodes))
+        self.boundary_array = np.zeros((self.num_nodes,1))
 
     def import_groups(self):
         physical_groups = gmsh.model.getPhysicalGroups()
@@ -74,6 +83,7 @@ class HeatTransfer:
             else:
                 name = gmsh.model.getPhysicalName(3, group[1])
                 volume_group_dict[name] = group[1]
+
 
         print("Number of Volumes: ", num_volumes)
         print("Number of Surfaces: ", num_surfaces)
@@ -91,14 +101,23 @@ class HeatTransfer:
             for tag in tags:
                 self.calculate_individual_mass_matrix(tag,rho,cp)
 
+    def assemble_stiffness_matrix(self):
+        for material, physical_tag in self.volume_dict.items():
+            tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag) #get mesh blocks belonging to group
+            rho, cp, k = self.material_properties[material]
+            for tag in tags:
+                self.calculate_individual_stiffness_matrix(tag,k)
 
     def calculate_individual_mass_matrix(self,volume_tag,rho,cp):  # takes in volume entity tag and add contributions to global matrix
         #using lumped mass matrix - only add values to diagonals
-        dim, tet_tags, tet_node_tags = gmsh.model.mesh.getElements(3,
-                                                                   volume_tag)  # get tetrahedron tags and the 4 nodes for the tets
-        tet_nodes = tet_node_tags[0]  # remove outer list
-        num_tets = len(tet_tags[0])  # number of tetrahedrons
-        tet_tags = tet_tags[0]
+        gmsh.model.mesh.createFaces([(3,volume_tag)])
+        tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4, volume_tag)  # get tetrahedron tags and the 4 nodes for the tets
+        face_tags, face_node_tags = gmsh.model.mesh.getElementsByType(2, volume_tag)
+        types, tags , nodes = gmsh.model.mesh.getElements(3, volume_tag)
+        print("Volume tag", volume_tag)
+        print("faces",face_tags[0:10])
+        print(types)
+        #tet_tags = tet_tags[0]
         #print(tet_tags)
         #nodes for each tet in matrix for calculating volume, etc
         quadrature_matrix = np.zeros((4, 4))
@@ -109,35 +128,34 @@ class HeatTransfer:
             local_mass_matrix = 1/4*quadrature_matrix*volume
             for i in range(0,4):
                 self.mass_matrix[nodes[i]-1,nodes[i]-1] += local_mass_matrix[i,i]*rho*cp
-
-
-        #     stiffness_local = np.zeros((4,4))
-        #     #stiffness matrix
-        #     gradient_local[:,:] = calculate_gradients(pts)
-        #     tet_gradients[i,:,:] = gradient_local[:,:]
-        #     for a in range(0,4):
-        #         for b in range(0,4):
-        #             stiffness_local[a,b] = volume * np.dot(gradient_local[a,:],gradient_local[b,:])
-        #     #add local mass and stiffness matrices to respective global matrices
-        #     for a in range(0,4):
-        #         for b in range(0,4):
-        #             M[nodes[a],nodes[b]] = M[nodes[a],nodes[b]] + volume*quadrature_matrix[a,b]
-        #             A[nodes[a], nodes[b]] = A[nodes[a], nodes[b]] + stiffness_local[a,b]
-        #return individual_matrix
-    def assemble_stiffness_matrix(self,volume_tag):
-        individual_matrix = np.zeros((self.num_nodes, self.num_nodes))
-        dim, tet_tags, tet_node_tags = gmsh.model.mesh.getElements(3,
+    def calculate_individual_stiffness_matrix(self,volume_tag,k):
+        tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4,
                                                                    volume_tag)  # get tetrahedron tags and the 4 nodes for the tets
-        tet_node_tags = tet_node_tags[0]  # remove outer list
-        num_tets = len(tet_tags[0])  # number of tetrahedrons
 
-        tet_nodes = np.zeros((self.num_nodes, 4))
-        local_mass_matrix = np.zeros((self.num_nodes, self.num_nodes))
+        for tet_tag in tet_tags:
+            volume = self.tet_volumes[tet_tag]
+            nodes = self.tet_nodes_dict[tet_tag]  # node tags [0 1 2 3], (tag-1) is index since nodes start at 1
+            gradient = self.tet_gradients[tet_tag] #4x3 array
+            local_stiffness = np.matmul(gradient,gradient.T)
+            for i in range(0,4):
+                for j in range(0,4):
+                    indices = np.ix_(nodes-1,nodes-1)
+                    self.stiffness_matrix[indices] = local_stiffness*k
 
-        # nodes for each tet in matrix for calculating volume, etc
-        for i in range(0, num_tets):
-            tet_nodes[i, :] = tet_node_tags[(4 * i):(4 * i + 4)] - 1
-        tet_nodes = tet_nodes.astype(int)
+    def calculate_boundary_matrix(self):
+
+        for surface_name,physical_tag in self.surface_dict.values():
+            data = self.boundary_conditions[surface_name]
+            if data[0] == "Temperature":
+                tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag)
+                temperature = data[1]
+                for tag in tags:
+                    self.constant_temperature_adjustment(tag,temperature)
+
+    # def constant_temperature_adjustment(self,tag,temperature):
+    #     #get faces belonging to tag
+    #
+
 
 
 
@@ -154,14 +172,15 @@ def main():
     #import mesh data and calculate useful values
     testsim.import_geometry() #
     testsim.calc_all_tet_properties()
-    #Create mass and stiffness matrix
+    #Compute Mass and Stiffness matrices
     testsim.assemble_mass_matrix()
+    testsim.assemble_stiffness_matrix()
 
-    #Fill mass and stiffness matrix
 
 
     #solve matrix w/ preconditioner and maybe rescaling?
     np.savetxt("Mass Matrix", testsim.mass_matrix, delimiter=',', fmt='%.2f')
+    np.savetxt("Stiffness Matrix", testsim.stiffness_matrix, delimiter=',', fmt='%.2f')
     gmsh.finalize()
 
 def calculate_volume(pts):
