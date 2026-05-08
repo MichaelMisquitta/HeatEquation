@@ -40,6 +40,7 @@ class HeatTransfer:
         # add function to read values in from file
         self.boundary_conditions["temperature"] = ["Temperature",500] # deg K
         self.boundary_conditions["cold"] = ["Temperature",300] # deg K
+        self.boundary_conditions["insulation"] = ["Insulation", 0]  # deg K
     def import_geometry(self):
 
         tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4)  # gets tets and node tags
@@ -47,9 +48,9 @@ class HeatTransfer:
         # print(element_tags)
         face_nodes = gmsh.model.mesh.getElementFaceNodes(4, 3)
         #gmsh.model.mesh.createEdges()
-        gmsh.model.mesh.createFaces()
-        face_tags, face_orientations = gmsh.model.mesh.getFaces(3, face_nodes)
-        print("Face Tags",face_tags)
+        #gmsh.model.mesh.createFaces()
+        #face_tags, face_orientations = gmsh.model.mesh.getFaces(3, face_nodes)
+        #print("Face Tags",face_tags)
         node_tags, node_coords, node_params = gmsh.model.mesh.getNodes()
         num_pts = node_tags.size
         # print("Node Tags")
@@ -112,14 +113,11 @@ class HeatTransfer:
         #using lumped mass matrix - only add values to diagonals
         gmsh.model.mesh.createFaces([(3,volume_tag)])
         tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4, volume_tag)  # get tetrahedron tags and the 4 nodes for the tets
-        face_tags, face_node_tags = gmsh.model.mesh.getElementsByType(2, volume_tag)
-        types, tags , nodes = gmsh.model.mesh.getElements(3, volume_tag)
-        print("Volume tag", volume_tag)
-        print("faces",face_tags[0:10])
-        print(types)
-        #tet_tags = tet_tags[0]
-        #print(tet_tags)
-        #nodes for each tet in matrix for calculating volume, etc
+
+        triangle_tags, triangle_nodes = gmsh.model.mesh.getElementsByType(2, volume_tag) # volume and temp have same tag of 1
+        # so above pulls triangles for surface
+        print("Volume", volume_tag)
+        print("Triangles", triangle_tags)
         quadrature_matrix = np.zeros((4, 4))
         np.fill_diagonal(quadrature_matrix, 1)
         for tet_tag in tet_tags :
@@ -144,14 +142,20 @@ class HeatTransfer:
 
     def calculate_boundary_matrix(self):
 
-        for surface_name,physical_tag in self.surface_dict.values():
+        for surface_name,physical_tag in self.surface_dict.items():
             data = self.boundary_conditions[surface_name]
-            if data[0] == "Temperature":
-                tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag)
-                temperature = data[1]
-                for tag in tags:
-                    self.constant_temperature_adjustment(tag,temperature)
-
+            # if data[0] == "Temperature":
+            #     tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag)
+            #     temperature = data[1]
+            #     for tag in tags:
+            #         self.constant_temperature_adjustment(tag,temperature)
+            tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
+            for tag in tags:
+                tags,nodes = gmsh.model.mesh.getElementsByType(2, tag)
+                print(surface_name + " tag: "+str(tag)+"  tags:" )
+                print(tags)
+                print("Node sampling")
+                print(nodes[0:6])
     # def constant_temperature_adjustment(self,tag,temperature):
     #     #get faces belonging to tag
     #
@@ -169,12 +173,14 @@ def main():
     testsim.import_groups()
     # import material properties
     testsim.import_material_properties()
+    testsim.import_boundary_conditions()
     #import mesh data and calculate useful values
     testsim.import_geometry() #
     testsim.calc_all_tet_properties()
     #Compute Mass and Stiffness matrices
     testsim.assemble_mass_matrix()
-    testsim.assemble_stiffness_matrix()
+    #testsim.assemble_stiffness_matrix()
+    testsim.calculate_boundary_matrix()
 
 
 
