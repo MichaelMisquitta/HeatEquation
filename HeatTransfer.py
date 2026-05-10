@@ -1,5 +1,6 @@
 import numpy as np
 import gmsh
+from helper import calc_single_tet_gradient, calc_tringle_area, calculate_volume
 import sys
 
 class HeatTransfer:
@@ -18,6 +19,7 @@ class HeatTransfer:
         self.surface_dict = {}
         self.tet_gradients={} # stores tet tag and associated gradients
         self.tet_volumes={} # stores tet tag and volume
+        self.tri_areas = {} # areas of boundary triangles - triangle and faces are different things
     def calc_all_tet_properties(self):
         #tet_tags, tet_nodes = gmsh.model.mesh.getElementsByType(4) # get all tetrahedra
         for tet_tag,nodes  in self.tet_nodes_dict.items():
@@ -60,7 +62,7 @@ class HeatTransfer:
 
         num_tets = tet_tags.size
         print("Num tets: ", num_tets)
-        for i in range(0,num_tets):
+        for i in range(0,num_tets):`
             node_tags = tet_node_tags[(4 * i):(4 * i + 4)]
             self.tet_nodes_dict[tet_tags[i]] = node_tags.astype(int)
 
@@ -114,10 +116,10 @@ class HeatTransfer:
         gmsh.model.mesh.createFaces([(3,volume_tag)])
         tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4, volume_tag)  # get tetrahedron tags and the 4 nodes for the tets
 
-        triangle_tags, triangle_nodes = gmsh.model.mesh.getElementsByType(2, volume_tag) # volume and temp have same tag of 1
+        #triangle_tags, triangle_nodes = gmsh.model.mesh.getElementsByType(2, volume_tag) # volume and temp have same tag of 1
         # so above pulls triangles for surface
-        print("Volume", volume_tag)
-        print("Triangles", triangle_tags)
+        #print("Volume", volume_tag)
+        #print("Triangles", triangle_tags)
         quadrature_matrix = np.zeros((4, 4))
         np.fill_diagonal(quadrature_matrix, 1)
         for tet_tag in tet_tags :
@@ -144,11 +146,11 @@ class HeatTransfer:
 
         for surface_name,physical_tag in self.surface_dict.items():
             data = self.boundary_conditions[surface_name]
-            # if data[0] == "Temperature":
-            #     tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag)
-            #     temperature = data[1]
-            #     for tag in tags:
-            #         self.constant_temperature_adjustment(tag,temperature)
+            if data[0] == "Temperature":
+                tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag)
+                temperature = data[1]
+                for tag in tags:
+                    self.constant_temperature_adjustment(tag,temperature)
             tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
             for tag in tags:
                 tags,nodes = gmsh.model.mesh.getElementsByType(2, tag)
@@ -156,9 +158,27 @@ class HeatTransfer:
                 print(tags)
                 print("Node sampling")
                 print(nodes[0:6])
-    # def constant_temperature_adjustment(self,tag,temperature):
-    #     #get faces belonging to tag
-    #
+
+
+
+
+    def constant_temperature_adjustment(self,tag,temperature):
+        #get faces belonging to tag
+        tri_tags, nodes = gmsh.model.mesh.getElementsByType(2, tag)
+
+    def calculate_boundary_tri_areas(self):
+        #grab all triangles
+        tri_tags,tri_nodes = gmsh.model.mesh.getElements(2,-1)
+        num_tri = tri_tags.size
+        tri_nodes = np.reshape(tri_nodes,(num_tri,3))
+        coords = np.zeros((3,3))
+        for i,tag in enumerate(tri_tags):
+            nodes = tri_nodes[i,:]
+            for i,node in enumerate(nodes):
+
+
+
+
 
 
 
@@ -188,53 +208,6 @@ def main():
     np.savetxt("Mass Matrix", testsim.mass_matrix, delimiter=',', fmt='%.2f')
     np.savetxt("Stiffness Matrix", testsim.stiffness_matrix, delimiter=',', fmt='%.2f')
     gmsh.finalize()
-
-def calculate_volume(pts):
-    vol_array = np.ones((4,4))
-    vol_array[:,0:3] = pts
-    return 1/6*abs(np.linalg.det(vol_array))
-def calculate_gradients(pts: np.ndarray):
-    J = np.zeros((3,3))
-    #fill jacobian
-    for i in range(0,3):
-        for j in range(0,3):
-            J[i,j] = pts[j+1,i]-pts[0,i]
-    transform = np.zeros((3,1))
-    #print(transform.shape)
-    left = np.array([[pts[1,0]-pts[0,0]], [pts[1,1]-pts[0,1]],[ pts[1,2]-pts[0,2] ]])
-
-    transform[:] = np.linalg.inv(J) @ left
-    gradients = np.zeros((4,3))
-    #rint(gradients[0,])
-    gradients[0,:] = (np.linalg.inv(J.T) @ np.array([[-1],[-1],[-1]])).T #Transpose vector to make it horizontal
-    for i in range(1,4):
-        init = np.zeros((3,1))
-        init[i-1,0] = 1
-        gradients[i,:] = (np.linalg.inv(J.T) @ init).T
-    return gradients
-
-def calc_single_tet_gradient(pt_coords):
-    J_T = np.zeros((3, 3))
-
-    for i in range(0, 3):
-        J_T[i, :] = pt_coords[i+1, :] - pt_coords[0, :]
-    J_T_invert = np.linalg.inv(J_T)
-    first_gradient = -1*np.sum(J_T_invert,axis=0)
-    gradient = np.vstack((first_gradient,J_T_invert))
-    return gradient
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # #gmsh.fltk.run()
