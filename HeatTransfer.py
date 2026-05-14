@@ -1,12 +1,14 @@
 import numpy as np
 import gmsh
-from helper import calc_single_tet_gradient, calc_tringle_area, calculate_volume
+from helper import *
 import sys
 
 class HeatTransfer:
     def __init__(self):
         self.mass_matrix = None # initialized in import geometry
         self.stiffness_matrix = None # initialized in import geometry
+        self.temperature_array = None
+        self.temperature_dot_array = None
         self.boundary_array = None
         self.tet_volumes = None
         self.tet_nodes_dict= {}
@@ -14,6 +16,8 @@ class HeatTransfer:
         self.num_nodes = 0
         self.num_tets = 0
         self.material_properties = {}
+        self.starting_temperature = 300 # should be able to set different volumes to different starting temperatures
+        #or even define a gradient in space and interpolate temperatures onto nodes
         self.boundary_conditions = {}
         self.volume_dict = {}
         self.surface_dict = {}
@@ -62,7 +66,7 @@ class HeatTransfer:
 
         num_tets = tet_tags.size
         print("Num tets: ", num_tets)
-        for i in range(0,num_tets):`
+        for i in range(0,num_tets):
             node_tags = tet_node_tags[(4 * i):(4 * i + 4)]
             self.tet_nodes_dict[tet_tags[i]] = node_tags.astype(int)
 
@@ -71,6 +75,8 @@ class HeatTransfer:
         self.mass_matrix = np.zeros((self.num_nodes,self.num_nodes))
         self.stiffness_matrix = np.zeros((self.num_nodes, self.num_nodes))
         self.boundary_array = np.zeros((self.num_nodes,1))
+        self.temperature_array = np.zeros((self.num_nodes, 1)) + self.starting_temperature
+        self.temperature_dot_array = np.zeros((self.num_nodes, 1))
 
     def import_groups(self):
         physical_groups = gmsh.model.getPhysicalGroups()
@@ -146,18 +152,25 @@ class HeatTransfer:
 
         for surface_name,physical_tag in self.surface_dict.items():
             data = self.boundary_conditions[surface_name]
-            if data[0] == "Temperature":
-                tags = gmsh.model.getEntitiesForPhysicalGroup(3, physical_tag)
-                temperature = data[1]
-                for tag in tags:
-                    self.constant_temperature_adjustment(tag,temperature)
-            tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
-            for tag in tags:
-                tags,nodes = gmsh.model.mesh.getElementsByType(2, tag)
-                print(surface_name + " tag: "+str(tag)+"  tags:" )
-                print(tags)
-                print("Node sampling")
-                print(nodes[0:6])
+            type = data[0]
+            match type:
+                case "Temperature":
+                    tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
+                    temperature = data[1]
+                    for tag in tags:
+                        self.constant_temperature_adjustment(tag,temperature)
+
+                case "Flux":
+                    print("")
+                case "Convection":
+                    print("")
+                # tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
+                # for tag in tags:
+                    #tags,nodes = gmsh.model.mesh.getElementsByType(2, tag)
+                    # print(surface_name + " tag: "+str(tag)+"  tags:" )
+                    # print(tags)
+                    # print("Node sampling")
+                    # print(nodes[0:6])
 
 
 
@@ -165,16 +178,28 @@ class HeatTransfer:
     def constant_temperature_adjustment(self,tag,temperature):
         #get faces belonging to tag
         tri_tags, nodes = gmsh.model.mesh.getElementsByType(2, tag)
+        nodes_unique = np.unique(nodes[0])
+        for node in nodes_unique:
+            self.mass_matrix[node-1,:] = 1
+            self.mass_matrix[:,node-1] = 1
+            self.stiffness_matrix[node - 1, :] = 0
+            self.stiffness_matrix[:, node - 1] = 0
+            self.temperature_array[node-1] = temperature
 
     def calculate_boundary_tri_areas(self):
         #grab all triangles
-        tri_tags,tri_nodes = gmsh.model.mesh.getElements(2,-1)
-        num_tri = tri_tags.size
-        tri_nodes = np.reshape(tri_nodes,(num_tri,3))
+        types,tri_tags,tri_nodes = gmsh.model.mesh.getElements(2,-1)
+        num_tri = len(tri_tags[0])
+        tri_nodes = np.reshape(tri_nodes[0],(num_tri,3))
         coords = np.zeros((3,3))
-        for i,tag in enumerate(tri_tags):
+        for i,tag in enumerate(tri_tags[0]):
             nodes = tri_nodes[i,:]
             for i,node in enumerate(nodes):
+                coords[i, :] = gmsh.model.mesh.getNode(node)[0]
+
+            area = calc_triangle_area(coords)
+            self.tri_areas[tag] = area
+
 
 
 
@@ -201,6 +226,9 @@ def main():
     testsim.assemble_mass_matrix()
     #testsim.assemble_stiffness_matrix()
     testsim.calculate_boundary_matrix()
+
+    testsim.calculate_boundary_tri_areas()
+
 
 
 

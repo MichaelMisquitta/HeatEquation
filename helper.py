@@ -33,7 +33,7 @@ def calc_single_tet_gradient(pt_coords):
     gradient = np.vstack((first_gradient,J_T_invert))
     return gradient
 
-def calc_tringle_area(pt_coords):
+def calc_triangle_area(pt_coords):
     # [xyz;xyz;xyz]
     vec = np.zeros((2,3))
     vec[0,:] = pt_coords[1,:] - pt_coords[0,:]
