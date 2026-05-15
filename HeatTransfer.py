@@ -7,11 +7,13 @@ class HeatTransfer:
     def __init__(self):
         self.mass_matrix = None # initialized in import geometry
         self.stiffness_matrix = None # initialized in import geometry
+        self.load_array = None # used for flux and convective boundary conditions
         self.temperature_array = None
         self.temperature_dot_array = None
         self.boundary_array = None
         self.tet_volumes = None
         self.tet_nodes_dict= {}
+        self.scale = 1.0/1000.0 # adjust ImportGeometry.py so it converts units to meters through scaling and this can be user option but not necessary
         #self.tet_tags = None
         self.num_nodes = 0
         self.num_tets = 0
@@ -21,6 +23,7 @@ class HeatTransfer:
         self.boundary_conditions = {}
         self.volume_dict = {}
         self.surface_dict = {}
+        self.temperature_surface = {} # stores entity tags of surfaces set to constant temperature
         self.tet_gradients={} # stores tet tag and associated gradients
         self.tet_volumes={} # stores tet tag and volume
         self.tri_areas = {} # areas of boundary triangles - triangle and faces are different things
@@ -29,7 +32,7 @@ class HeatTransfer:
         for tet_tag,nodes  in self.tet_nodes_dict.items():
             pt_coords = np.zeros((4,3))
             for i,node in enumerate(nodes):
-                coords = gmsh.model.mesh.getNode(node)[0]
+                coords = self.scale*gmsh.model.mesh.getNode(node)[0]
                 pt_coords[i,:] = np.array(coords)
              #print("nodes",)
             #pt_coords = np.reshape(pt_coords_flat, (4, 3))  # each row has x y z coords
@@ -58,7 +61,12 @@ class HeatTransfer:
         #face_tags, face_orientations = gmsh.model.mesh.getFaces(3, face_nodes)
         #print("Face Tags",face_tags)
         node_tags, node_coords, node_params = gmsh.model.mesh.getNodes()
+
         num_pts = node_tags.size
+        reshaped = np.reshape(node_coords*self.scale, (num_pts,3))
+        print("max x", max((reshaped[:,0])))
+        print("max y", max((reshaped[:, 1])))
+        print("max z", max((reshaped[:, 2])))
         # print("Node Tags")
         # print(node_tags)
 
@@ -77,6 +85,7 @@ class HeatTransfer:
         self.boundary_array = np.zeros((self.num_nodes,1))
         self.temperature_array = np.zeros((self.num_nodes, 1)) + self.starting_temperature
         self.temperature_dot_array = np.zeros((self.num_nodes, 1))
+        self.load_array = np.zeros((self.num_nodes, 1))
 
     def import_groups(self):
         physical_groups = gmsh.model.getPhysicalGroups()
@@ -119,13 +128,8 @@ class HeatTransfer:
 
     def calculate_individual_mass_matrix(self,volume_tag,rho,cp):  # takes in volume entity tag and add contributions to global matrix
         #using lumped mass matrix - only add values to diagonals
-        gmsh.model.mesh.createFaces([(3,volume_tag)])
+        #gmsh.model.mesh.createFaces([(3,volume_tag)])
         tet_tags, tet_node_tags = gmsh.model.mesh.getElementsByType(4, volume_tag)  # get tetrahedron tags and the 4 nodes for the tets
-
-        #triangle_tags, triangle_nodes = gmsh.model.mesh.getElementsByType(2, volume_tag) # volume and temp have same tag of 1
-        # so above pulls triangles for surface
-        #print("Volume", volume_tag)
-        #print("Triangles", triangle_tags)
         quadrature_matrix = np.zeros((4, 4))
         np.fill_diagonal(quadrature_matrix, 1)
         for tet_tag in tet_tags :
@@ -142,23 +146,26 @@ class HeatTransfer:
             volume = self.tet_volumes[tet_tag]
             nodes = self.tet_nodes_dict[tet_tag]  # node tags [0 1 2 3], (tag-1) is index since nodes start at 1
             gradient = self.tet_gradients[tet_tag] #4x3 array
-            local_stiffness = np.matmul(gradient,gradient.T)
-            for i in range(0,4):
-                for j in range(0,4):
-                    indices = np.ix_(nodes-1,nodes-1)
-                    self.stiffness_matrix[indices] = local_stiffness*k
+            local_stiffness = np.matmul(gradient,gradient.T)*volume
+
+            indices = np.ix_(nodes-1,nodes-1)
+            self.stiffness_matrix[indices] += local_stiffness*k
 
     def calculate_boundary_matrix(self):
 
         for surface_name,physical_tag in self.surface_dict.items():
             data = self.boundary_conditions[surface_name]
-            type = data[0]
-            match type:
+            boundary_type = data[0]
+            match boundary_type:
                 case "Temperature":
+
                     tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
+
                     temperature = data[1]
+                    print("Temp",temperature)
                     for tag in tags:
-                        self.constant_temperature_adjustment(tag,temperature)
+                        self.temperature_surface[tag] = temperature
+                        self.constant_temperature_adjustment(tag)
 
                 case "Flux":
                     print("")
@@ -172,19 +179,25 @@ class HeatTransfer:
                     # print("Node sampling")
                     # print(nodes[0:6])
 
-
-
-
-    def constant_temperature_adjustment(self,tag,temperature):
+    def constant_temperature_adjustment(self,tag):
         #get faces belonging to tag
         tri_tags, nodes = gmsh.model.mesh.getElementsByType(2, tag)
-        nodes_unique = np.unique(nodes[0])
+        nodes_unique = np.unique(nodes)
         for node in nodes_unique:
-            self.mass_matrix[node-1,:] = 1
-            self.mass_matrix[:,node-1] = 1
+            self.mass_matrix[node-1,node-1] = 1
             self.stiffness_matrix[node - 1, :] = 0
-            self.stiffness_matrix[:, node - 1] = 0
-            self.temperature_array[node-1] = temperature
+            #self.stiffness_matrix[:, node - 1] = 0
+
+
+    def apply_constant_temperature(self):
+        for tag,temperature in self.temperature_surface.items():
+            tri_tags, nodes = gmsh.model.mesh.getElementsByType(2, tag)
+            #print(nodes)
+            nodes_unique = np.unique(nodes)
+            for node in nodes_unique:
+                self.temperature_array[node - 1,0] = temperature
+
+
 
     def calculate_boundary_tri_areas(self):
         #grab all triangles
@@ -195,13 +208,34 @@ class HeatTransfer:
         for i,tag in enumerate(tri_tags[0]):
             nodes = tri_nodes[i,:]
             for i,node in enumerate(nodes):
-                coords[i, :] = gmsh.model.mesh.getNode(node)[0]
+                coords[i, :] = self.scale*gmsh.model.mesh.getNode(node)[0]
 
             area = calc_triangle_area(coords)
             self.tri_areas[tag] = area
 
+    #simulations -  can do different time stepping methods to experiment
+    def simulate_backwards_euler(self,dt,time):
+        self.apply_constant_temperature()
+        current_temperature = self.temperature_array.copy()
 
+        np.savetxt("Temperature_initial", self.temperature_array)
+        next_temperature = np.zeros((self.num_nodes,1)) # column array to store new temperature values
+        steps = int(time/dt)
+        print(steps)
+        #can add code to check condition number and figure out if preconditioning is needed
+        #steps = 1
+        M_inverse = np.linalg.inv(self.mass_matrix)
+        first = np.linalg.inv((np.eye(self.num_nodes) + dt * M_inverse @ self.stiffness_matrix))
+        second =  dt * M_inverse @ self.load_array
 
+        tdot = -M_inverse@self.stiffness_matrix@ current_temperature
+        np.savetxt("Initial Tdot", tdot)
+        # for step in range(0,steps):
+        #     next_temperature = first @ (current_temperature+second)
+        #     current_temperature = next_temperature.copy()
+        #     print(next_temperature[28,0])
+
+        np.savetxt("Temperature", current_temperature)
 
 
 
@@ -213,6 +247,9 @@ class HeatTransfer:
 def main():
     gmsh.initialize()
     gmsh.open("model.msh")
+    x,y,z,X,Y,Z = gmsh.model.getBoundingBox(-1,-1)
+    print(x)
+    print(X)
     testsim = HeatTransfer()
     #extract volume and surface grouping names and tags
     testsim.import_groups()
@@ -224,17 +261,28 @@ def main():
     testsim.calc_all_tet_properties()
     #Compute Mass and Stiffness matrices
     testsim.assemble_mass_matrix()
-    #testsim.assemble_stiffness_matrix()
-    testsim.calculate_boundary_matrix()
-
+    testsim.assemble_stiffness_matrix()
     testsim.calculate_boundary_tri_areas()
 
+    testsim.calculate_boundary_matrix()
 
+    #run simulation
+    #testsim.simulate_backwards_euler(0.001,1)
+
+
+    print(testsim.stiffness_matrix[28,:]@testsim.temperature_array)
+    nonzero = np.nonzero(testsim.stiffness_matrix[28,:])
+    print(nonzero)
+
+    print(testsim.temperature_array[nonzero,0:])
+    print(testsim.stiffness_matrix[28,nonzero])
+    print(testsim.stiffness_matrix[ nonzero,28])
 
 
     #solve matrix w/ preconditioner and maybe rescaling?
     np.savetxt("Mass Matrix", testsim.mass_matrix, delimiter=',', fmt='%.2f')
     np.savetxt("Stiffness Matrix", testsim.stiffness_matrix, delimiter=',', fmt='%.2f')
+
     gmsh.finalize()
 
 
