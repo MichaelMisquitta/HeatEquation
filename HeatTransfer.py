@@ -185,7 +185,7 @@ class HeatTransfer:
         nodes_unique = np.unique(nodes)
         for node in nodes_unique:
             self.mass_matrix[node-1,node-1] = 1
-            self.stiffness_matrix[node - 1, :] = 0
+            self.stiffness_matrix[node - 1, :] = 0 # only rows need to be set to 0 , not columns since columns will affect other nodes also; each row is for a node , columns are effect of one node on many and should be left alone
             #self.stiffness_matrix[:, node - 1] = 0
 
 
