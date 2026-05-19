@@ -12,11 +12,15 @@ class HeatTransfer:
         self.temperature_dot_array = None
         self.boundary_array = None
         self.tet_volumes = None
+        self.nodes = None
+        self.tri_nodes = None # nodes for each surface triangle
+        self.node_coordinates = None
         self.tet_nodes_dict= {}
         self.scale = 1.0/1000.0 # adjust ImportGeometry.py so it converts units to meters through scaling and this can be user option but not necessary
         #self.tet_tags = None
         self.num_nodes = 0
         self.num_tets = 0
+        self.num_tri = 0 # number of boundary triangles
         self.material_properties = {}
         self.starting_temperature = 300 # should be able to set different volumes to different starting temperatures
         #or even define a gradient in space and interpolate temperatures onto nodes
@@ -64,6 +68,9 @@ class HeatTransfer:
 
         num_pts = node_tags.size
         reshaped = np.reshape(node_coords*self.scale, (num_pts,3))
+        self.nodes = (np.array(list(range(num_pts)))).T
+        self.node_coordinates = reshaped
+
         print("max x", max((reshaped[:,0])))
         print("max y", max((reshaped[:, 1])))
         print("max z", max((reshaped[:, 2])))
@@ -203,7 +210,10 @@ class HeatTransfer:
         #grab all triangles
         types,tri_tags,tri_nodes = gmsh.model.mesh.getElements(2,-1)
         num_tri = len(tri_tags[0])
+
         tri_nodes = np.reshape(tri_nodes[0],(num_tri,3))
+        self.num_tri = num_tri
+        self.tri_nodes = tri_nodes.astype(int)
         coords = np.zeros((3,3))
         for i,tag in enumerate(tri_tags[0]):
             nodes = tri_nodes[i,:]
@@ -213,6 +223,18 @@ class HeatTransfer:
             area = calc_triangle_area(coords)
             self.tri_areas[tag] = area
 
+    def write_data(self):
+        with open("data.txt","w") as file:
+            file.write(str(self.num_nodes) + "\n")
+            file.write(str(self.num_tri)+ "\n")
+            #write all coordinates to file
+        with open("data.txt","a") as file:
+            np.savetxt(file,self.node_coordinates,delimiter = " ")
+            #file.write("\n")
+            np.savetxt(file,self.tri_nodes,delimiter = " ",fmt="%i")
+            # for surface_name,physical_tag in self.surface_dict.items():
+            #     tags = gmsh.model.getEntitiesForPhysicalGroup(2, physical_tag)
+            # #for each tag,
     #simulations -  can do different time stepping methods to experiment
     def simulate_backwards_euler(self,dt,time):
         self.apply_constant_temperature()
@@ -267,16 +289,8 @@ def main():
     testsim.calculate_boundary_matrix()
 
     #run simulation
-    #testsim.simulate_backwards_euler(0.001,1)
-
-
-    print(testsim.stiffness_matrix[28,:]@testsim.temperature_array)
-    nonzero = np.nonzero(testsim.stiffness_matrix[28,:])
-    print(nonzero)
-
-    print(testsim.temperature_array[nonzero,0:])
-    print(testsim.stiffness_matrix[28,nonzero])
-    print(testsim.stiffness_matrix[ nonzero,28])
+    testsim.simulate_backwards_euler(0.001,0.005)
+    testsim.write_data()
 
 
     #solve matrix w/ preconditioner and maybe rescaling?
